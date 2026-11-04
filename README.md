@@ -72,7 +72,7 @@ xcrun notarytool store-credentials defrost-notary --apple-id <apple-id> --team-i
 NOTARY_PROFILE=defrost-notary scripts/release.sh
 ```
 
-In CI, set `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` instead (see `.github/workflows/release.yml`).
+Releases are built and notarized locally. A GitHub Actions release workflow exists but is disabled; see `.github/disabled-workflows/release.yml` for how to turn it back on.
 
 Logs are written to `~/Library/Logs/Defrost.log`.
 

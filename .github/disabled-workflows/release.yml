@@ -1,3 +1,13 @@
+# DISABLED. GitHub only runs workflows in .github/workflows/, so this one never runs.
+# Releases are built locally:  NOTARY_PROFILE=defrost-notary scripts/release.sh
+#
+# To re-enable:  git mv .github/disabled-workflows/release.yml .github/workflows/release.yml
+# then add the repository secrets listed below. Before doing so, consider:
+#   - a dedicated Developer ID certificate just for CI (revoke it alone if it leaks)
+#   - an App Store Connect API key instead of an Apple ID app password
+#   - a protected "release" environment that requires approval
+#   - pinning actions/checkout to a commit SHA
+#
 # Builds a signed, notarized DMG when a version tag (e.g. v0.1.0) is pushed,
 # and attaches it to a GitHub release.
 #
