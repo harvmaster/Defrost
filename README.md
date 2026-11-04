@@ -1,6 +1,6 @@
 # Defrost
 
-A lightweight menu bar manager for macOS 14+ (tested on macOS 26). Each menu bar item gets one of three policies:
+A lightweight menu bar manager for macOS 14+ (tested on macOS 26 and 27). Each menu bar item gets one of three policies:
 
 | Policy | Behaviour |
 |---|---|
@@ -90,8 +90,21 @@ Defrost moves items with the same synthetic Cmd-drag that macOS uses for rearran
 
 The hiding approach and the item-moving recipe are adapted from [Ice](https://github.com/jordanbaird/Ice) (GPL-3.0).
 
+### macOS 27
+
+macOS 27 draws the whole menu bar in a single process (MenuBarAgent), so the dividers and moving no longer work. Instead Defrost uses the menu bar's assessment mode (the restricted mode used for exams) from the private MenuBarClientCore framework: while Defrost holds an assertion, the menu bar shows only the apps and system items it allows. This works the same way as Ice 2. As a result, on macOS 27:
+
+- Items are hidden **per app**: all of an app's items share one policy.
+- Of Apple's own items, only Battery, Bluetooth, Displays, Keyboard, Sound, Wi-Fi and Screen Mirroring can be hidden. The clock and Control Centre always stay, and other Apple items (such as Audio and Video Controls) can't be hidden.
+- Items from processes without a bundle ID are hidden whenever anything is hidden.
+- Defrost can't rearrange items. Hold ⌘ and drag them in the menu bar instead.
+- Every item is shown while Settings is open, and if Defrost quits.
+- Notification Center doesn't open while items are hidden. Defrost watches for a click on the clock and for the "Show Notification Center" shortcut, shows everything, replays the gesture and hides again when the panel closes. The trackpad gesture can't be bridged.
+
 ## License
 
 Defrost is free software, licensed under the [GNU General Public License v3.0](LICENSE).
 
-Copyright © 2026 Harvey Zuccon. Portions are adapted from [Ice](https://github.com/jordanbaird/Ice), copyright © Jordan Baird, also GPL-3.0: the divider hiding technique, the private window-server declarations, and the item-moving event recipe.
+Copyright © 2026 Harvey Zuccon. Portions are adapted from [Ice](https://github.com/jordanbaird/Ice), copyright © Jordan Baird, also GPL-3.0: the divider hiding technique, the private window-server declarations, and the item-moving event recipe. The macOS 27 hiding (`NativeMenuBar.swift`) is adapted from [Ice 2](https://github.com/teddychan/ice-2-macos) (GPL-3.0), which builds on research from [pelmet](https://github.com/fif7y/pelmet) (GPL-3.0).
+
+GPL-derived files are marked with a `LICENSE NOTE` comment at the top: `Bridging.swift`, `Dividers.swift`, `ItemMover.swift` and `NativeMenuBar.swift`.

@@ -1,3 +1,6 @@
+// LICENSE NOTE: The item-moving event recipe is adapted from Ice's macos-26
+// branch (https://github.com/jordanbaird/Ice, GPL-3.0). Used on macOS 14–26 only.
+
 import AppKit
 import CoreGraphics
 

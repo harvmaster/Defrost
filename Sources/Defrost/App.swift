@@ -70,14 +70,19 @@ final class AgentApp: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated {
                     // Settings may have changed the layout, so reconcile once more to be safe.
                     self.settingsProcess = nil
+                    self.controller.setShowingAll(false)
                     self.controller.rescan()
                 }
             }
         }
+        // macOS 27+: hidden items can't be listed there, so show everything
+        // while Settings is open.
+        if MenuBarItems.isComposited { controller.setShowingAll(true) }
         do {
             try process.run()
             settingsProcess = process
         } catch {
+            controller.setShowingAll(false)
             Log.info("could not open settings: \(error)")
         }
     }

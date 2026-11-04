@@ -1,3 +1,6 @@
+// LICENSE NOTE: These private SkyLight declarations follow Ice
+// (https://github.com/jordanbaird/Ice, GPL-3.0). Used on macOS 14–26 only.
+
 import CoreGraphics
 import Foundation
 

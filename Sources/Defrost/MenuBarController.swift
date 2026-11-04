@@ -10,10 +10,20 @@ import ServiceManagement
 final class MenuBarController {
     let store: ConfigStore
     let reconciler = Reconciler()
+    /// The dividers, on macOS 14–26.
     private(set) var dividerA: Divider!
     private(set) var dividerN: Divider!
+    /// Hides items on macOS 27+, where the dividers no longer work.
+    private var nativeHider: NativeHider?
+    /// macOS 27+: Notification Center won't open while items are hidden; see `NotificationCenterBridge`.
+    private var notificationCenterBridge: NotificationCenterBridge?
 
     private(set) var isRevealed = false
+    /// macOS 27+: every item is shown while Settings is open, because hidden
+    /// items can't be seen through Accessibility there.
+    private(set) var isShowingAll = false
+    /// macOS 27+: true while Notification Center is open over a clock click or shortcut.
+    private var isSuspendedForNotificationCenter = false
     private var clickMonitor: Any?
     private var lastToggle = Date.distantPast
     private var rehideTimer: Timer?
@@ -28,17 +38,28 @@ final class MenuBarController {
     }
 
     func start() {
-        // Creation order matters: a new status item appears left of existing
-        // ones, so creating A first and then N gives [N][A][items...].
-        dividerA = Divider(name: "A")
-        dividerN = Divider(name: "N")
-        // On macOS 26 clicks on empty menu bar space don't reach the expanded
-        // divider, so a click-only global monitor handles them (see
-        // handleClick). The divider actions stay as a fallback.
-        dividerA.onClick = { [weak self] in self?.toggleDebounced() }
-        dividerN.onClick = { [weak self] in self?.toggleDebounced() }
-        applyDividerState()
-        ItemMover.enableBackgroundCursorControl()
+        if MenuBarItems.isComposited {
+            nativeHider = NativeHider()
+            notificationCenterBridge = NotificationCenterBridge(
+                isConcealing: { [weak self] in self?.nativeHider?.isConcealing ?? false },
+                suspend: { [weak self] suspended in
+                    self?.isSuspendedForNotificationCenter = suspended
+                    self?.applyNativeHiding()
+                }
+            )
+        } else {
+            // Creation order matters: a new status item appears left of existing
+            // ones, so creating A first and then N gives [N][A][items...].
+            dividerA = Divider(name: "A")
+            dividerN = Divider(name: "N")
+            // On macOS 26 clicks on empty menu bar space don't reach the expanded
+            // divider, so a click-only global monitor handles them (see
+            // handleClick). The divider actions stay as a fallback.
+            dividerA.onClick = { [weak self] in self?.toggleDebounced() }
+            dividerN.onClick = { [weak self] in self?.toggleDebounced() }
+            ItemMover.enableBackgroundCursorControl()
+        }
+        applyVisibility()
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             // Cmd-clicks are menu bar rearranging, including Defrost's own synthetic moves.
             if event.modifierFlags.contains(.command) { return }
@@ -55,6 +76,7 @@ final class MenuBarController {
             reconciler.adoptAsAlways = false
             if snapshot.config != store.config {
                 store.save(snapshot.config)
+                applyNativeHiding()
             }
         }
 
@@ -65,11 +87,22 @@ final class MenuBarController {
 
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] _ in
-            // Apps create their status items a little after launching.
-            MainActor.assumeIsolated { self?.scheduleReconcile(after: [1.5, 5]) }
+            MainActor.assumeIsolated {
+                // macOS 27+: an app missing from the allowed list is hidden, so
+                // allow (or hide) the new app straight away.
+                self?.applyNativeHiding()
+                // Apps create their status items a little after launching.
+                self?.scheduleReconcile(after: [1.5, 5])
+            }
+        }
+        nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.nativeHider?.restore() }
         }
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleReconcile(after: [2]) }
+            MainActor.assumeIsolated {
+                self?.applyNativeHiding()
+                self?.scheduleReconcile(after: [2])
+            }
         }
 
         applyHotkey()
@@ -81,6 +114,8 @@ final class MenuBarController {
 
     func stop() {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        notificationCenterBridge?.stop()
+        nativeHider?.restore()
         dividerA?.remove()
         dividerN?.remove()
     }
@@ -95,6 +130,7 @@ final class MenuBarController {
     }
 
     private func configDidChange(_ newConfig: Config, reconcile: Bool) {
+        applyNativeHiding()
         applyHotkey()
         applyLaunchAtLogin()
         if reconcile { reconciler.reconcile() }
@@ -161,7 +197,7 @@ final class MenuBarController {
     func reveal() {
         guard !isRevealed else { return }
         isRevealed = true
-        applyDividerState()
+        applyVisibility()
         installRehideTriggers()
     }
 
@@ -169,10 +205,30 @@ final class MenuBarController {
         guard isRevealed else { return }
         isRevealed = false
         removeRehideTriggers()
-        applyDividerState()
+        applyVisibility()
     }
 
-    private func applyDividerState() {
+    func setShowingAll(_ showAll: Bool) {
+        guard showAll != isShowingAll else { return }
+        isShowingAll = showAll
+        applyVisibility()
+    }
+
+
+    /// macOS 27+: asks MenuBarAgent to hide the apps whose policy says so.
+    private func applyNativeHiding() {
+        guard let nativeHider else { return }
+        if isShowingAll || isSuspendedForNotificationCenter {
+            nativeHider.restore()
+            return
+        }
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        nativeHider.apply(NativeMenuBar.configuration(for: store.config, runningBundles: running, revealed: isRevealed))
+    }
+
+    /// Shows or hides items for the current state.
+    private func applyVisibility() {
+        applyNativeHiding()
         guard let dividerA, let dividerN else { return }
         dividerA.set(isRevealed ? .collapsed : .expanded)
         dividerN.set(.expanded)
@@ -204,7 +260,12 @@ final class MenuBarController {
                 let empty = MenuBarGeometry.isEmptyMenuBarSpace(cgPoint)
                 Log.info("menu bar click at \(Int(cgPoint.x)) empty=\(empty)")
                 guard empty else { return }
-                DispatchQueue.main.async { self?.toggleDebounced() }
+                DispatchQueue.main.async {
+                    // macOS 27+: a clock click that opened Notification Center
+                    // changes the layout, which can make it look like empty space.
+                    if self?.notificationCenterBridge?.isSuspended == true { return }
+                    self?.toggleDebounced()
+                }
             }
             return
         }
@@ -252,12 +313,18 @@ enum MenuBarGeometry {
     /// a status item nor the frontmost app's menus. Runs off the main thread,
     /// and only for clicks inside the menu bar.
     static func isEmptyMenuBarSpace(_ point: CGPoint) -> Bool {
-        for wid in Bridging.menuBarWindowIDs() {
-            guard let f = Bridging.frame(of: wid), f.contains(point) else { continue }
-            // The app menu bar window spans the full width, and expanded
-            // dividers are thousands of points wide. Neither is an item.
-            if f.width >= 1000 { continue }
-            return false
+        if MenuBarItems.isComposited {
+            // macOS 27+: the menu bar is one window per display, so ask
+            // MenuBarAgent where items are drawn.
+            if MenuBarItems.compositedItemFrames().contains(where: { $0.contains(point) }) { return false }
+        } else {
+            for wid in Bridging.menuBarWindowIDs() {
+                guard let f = Bridging.frame(of: wid), f.contains(point) else { continue }
+                // The app menu bar window spans the full width, and expanded
+                // dividers are thousands of points wide. Neither is an item.
+                if f.width >= 1000 { continue }
+                return false
+            }
         }
         guard let app = NSWorkspace.shared.frontmostApplication else { return true }
         let element = AXUIElementCreateApplication(app.processIdentifier)

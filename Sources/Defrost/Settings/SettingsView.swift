@@ -64,7 +64,8 @@ private struct ItemsPane: View {
                         ForEach(rows) { row in
                             ItemRow(row: row, model: model)
                         }
-                        .onMove { model.move(in: policy, from: $0, to: $1) }
+                        // macOS 27+ can't rearrange the menu bar, so order doesn't matter there.
+                        .onMove(perform: MenuBarItems.isComposited ? nil : { model.move(in: policy, from: $0, to: $1) })
                     } header: {
                         HStack(alignment: .firstTextBaseline) {
                             Text(policy.title).font(.headline)
@@ -76,7 +77,9 @@ private struct ItemsPane: View {
             .listStyle(.inset(alternatesRowBackgrounds: true))
 
             HStack {
-                Text("Drag to reorder. Each list runs left to right as items appear in the menu bar.")
+                Text(MenuBarItems.isComposited
+                     ? "On macOS 27, items are hidden per app, so all of an app's items share a policy. Hold ⌘ and drag items in the menu bar to arrange them."
+                     : "Drag to reorder. Each list runs left to right as items appear in the menu bar.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Rescan") { model.rescan() }
@@ -113,6 +116,8 @@ private struct ItemRow: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 210)
+            .disabled(!row.canHide)
+            .help(row.canHide ? "" : "macOS 27 doesn't let Defrost hide this item.")
         }
         .contextMenu {
             Button("Forget This Item") { model.forget(row.id) }

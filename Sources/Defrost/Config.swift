@@ -23,6 +23,9 @@ struct ItemConfig: Codable, Equatable, Identifiable {
     var id: String
     var name: String
     var policy: Policy
+    /// The owning app's bundle ID. Only stored when `id` is an Accessibility
+    /// identifier rather than "<bundle>#<n>"; macOS 27 hides items per app.
+    var bundle: String? = nil
 }
 
 /// The whole configuration. Within each policy group, `items` are listed

@@ -1,3 +1,7 @@
+// LICENSE NOTE: The divider hiding technique (an expanded status item that
+// pushes items off-screen) is adapted from Ice (https://github.com/jordanbaird/Ice,
+// GPL-3.0). Used on macOS 14–26 only.
+
 import AppKit
 
 /// An invisible status item used as a section boundary.

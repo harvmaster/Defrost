@@ -53,7 +53,9 @@ final class Reconciler {
         var config = inputConfig
         Reconciler.adopt(items: items, into: &config, firstRun: adoptAsAlways)
         DispatchQueue.main.sync { didScan?(Snapshot(items: items, config: config)) }
-        guard applyMoves else { return }
+        // macOS 27+ hides whole apps with assessment mode (see NativeMenuBar),
+        // so items are never moved there; the scan only adds new items.
+        guard applyMoves, !MenuBarItems.isComposited else { return }
 
         let movable = items.filter { !$0.isFixed }
         guard movable.contains(where: { $0.dividerName == "A" }),
@@ -100,7 +102,21 @@ final class Reconciler {
     static func adopt(items: [MenuBarItem], into config: inout Config, firstRun: Bool = false) {
         let known = Set(config.items.map(\.id))
         for item in items where !item.isDivider && !item.isFixed && !known.contains(item.id) {
-            let entry = ItemConfig(id: item.id, name: item.displayName, policy: firstRun ? .always : config.defaultPolicy)
+            var policy = firstRun ? .always : config.defaultPolicy
+            // macOS 27 hides an app's items together, so a new item joins its
+            // app's existing policy.
+            if MenuBarItems.isComposited,
+               let sibling = config.items.first(where: { $0.bundleID == item.bundleID && !item.bundleID.isEmpty }) {
+                policy = sibling.policy
+            }
+            var entry = ItemConfig(id: item.id, name: item.displayName, policy: policy)
+            if !item.id.hasPrefix("\(item.bundleID)#") && !item.id.hasPrefix("com.apple.menuextra.") {
+                entry.bundle = item.bundleID
+            }
+            // macOS 27+: items Defrost can't hide are always shown, so say so.
+            if MenuBarItems.isComposited, !NativeMenuBar.canHide(entry) {
+                entry.policy = .always
+            }
             // New items start at the left end of their group.
             if let firstOfGroup = config.items.firstIndex(where: { $0.policy == entry.policy }) {
                 config.items.insert(entry, at: firstOfGroup)

@@ -24,7 +24,10 @@ final class SettingsModel: ObservableObject {
 
     /// Lists the current menu bar items and adds any new ones to the config.
     func scan() {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // macOS 27+: give the agent a moment to show every item (it does so
+        // while Settings is open) before listing them.
+        let delay: TimeInterval = MenuBarItems.isComposited ? 0.5 : 0
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
             guard AXIsProcessTrusted() else {
                 DispatchQueue.main.async { self?.refreshEnvironment() }
                 return
@@ -62,10 +65,12 @@ final class SettingsModel: ObservableObject {
         let name: String
         let policy: Policy
         let isPresent: Bool
+        /// False for items Defrost can't hide on this macOS (macOS 27+ only).
+        let canHide: Bool
         let icon: NSImage?
 
         static func == (a: Row, b: Row) -> Bool {
-            a.id == b.id && a.name == b.name && a.policy == b.policy && a.isPresent == b.isPresent
+            a.id == b.id && a.name == b.name && a.policy == b.policy && a.isPresent == b.isPresent && a.canHide == b.canHide
         }
     }
 
@@ -78,6 +83,7 @@ final class SettingsModel: ObservableObject {
                 name: live?.displayName ?? entry.name,
                 policy: entry.policy,
                 isPresent: live != nil,
+                canHide: !MenuBarItems.isComposited || NativeMenuBar.canHide(entry),
                 icon: icon(for: entry.id, live: live)
             )
         }
@@ -124,6 +130,20 @@ final class SettingsModel: ObservableObject {
     // MARK: Edits
 
     func setPolicy(_ policy: Policy, for id: String) {
+        if MenuBarItems.isComposited,
+           let entry = config.items.first(where: { $0.id == id }),
+           NativeMenuBar.systemItem(forIdentifier: id) == nil,
+           let bundle = entry.bundleID {
+            // macOS 27+: an app's items are hidden together, so keep them on one policy.
+            for sibling in config.items where sibling.bundleID == bundle {
+                setSinglePolicy(policy, for: sibling.id)
+            }
+            return
+        }
+        setSinglePolicy(policy, for: id)
+    }
+
+    private func setSinglePolicy(_ policy: Policy, for id: String) {
         var c = config
         guard let index = c.items.firstIndex(where: { $0.id == id }), c.items[index].policy != policy else { return }
         var entry = c.items.remove(at: index)

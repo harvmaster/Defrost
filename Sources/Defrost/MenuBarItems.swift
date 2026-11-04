@@ -5,6 +5,8 @@ import ApplicationServices
 struct MenuBarItem: Identifiable, Equatable {
     /// Stable identifier used in the config, e.g. "com.apple.menuextra.battery" or "ru.keepcoder.Telegram#0".
     let id: String
+    /// The item's own window server window. 0 on macOS 27+, where status
+    /// items no longer have windows of their own (see `MenuBarItems`).
     let windowID: CGWindowID
     /// Global frame, top-left origin.
     var frame: CGRect
@@ -46,13 +48,25 @@ enum MenuBarItems {
         let frame: CGRect
     }
 
-    /// Lists all status items left-to-right, as macOS 26 sees them. Status
-    /// item windows are owned by Control Center there, so each window is
-    /// matched to its app through that app's Accessibility "extras menu bar".
+    /// True on macOS 27 and later. There the whole menu bar is drawn by
+    /// MenuBarAgent into one window per display, so status items have no
+    /// window server windows of their own and must be located with
+    /// Accessibility alone.
+    static let isComposited: Bool = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(majorVersion: 27, minorVersion: 0, patchVersion: 0))
+
+    /// Lists all status items left-to-right.
+    ///
+    /// - macOS 26: status item windows are owned by Control Center, so each
+    ///   window is matched to its app through that app's Accessibility
+    ///   "extras menu bar".
+    /// - macOS 27+: there are no per-item windows, so the Accessibility
+    ///   frames are used directly.
     ///
     /// Must not run on the main thread, because it queries Defrost's own process too.
     static func current() -> [MenuBarItem] {
         precondition(!Thread.isMainThread, "MenuBarItems.current() must run off the main thread")
+        if isComposited { return currentComposited() }
 
         let windows: [(CGWindowID, CGRect)] = Bridging.menuBarWindowIDs().compactMap { wid in
             guard let frame = Bridging.frame(of: wid), frame.height < 60 else { return nil }
@@ -101,6 +115,35 @@ enum MenuBarItems {
         return result.sorted { $0.frame.minX < $1.frame.minX }
     }
 
+    /// macOS 27+: builds items from Accessibility frames alone.
+    private static func currentComposited() -> [MenuBarItem] {
+        var perAppIndex: [String: Int] = [:]
+        var result: [MenuBarItem] = []
+        // Number each app's items from the right, where new items don't appear.
+        for ax in collectAXItems().sorted(by: { $0.frame.maxX > $1.frame.maxX }) {
+            let id: String
+            if let ident = ax.identifier, !ident.isEmpty {
+                id = ident
+            } else {
+                let n = perAppIndex[ax.bundleID, default: 0]
+                perAppIndex[ax.bundleID] = n + 1
+                id = "\(ax.bundleID)#\(n)"
+            }
+            result.append(MenuBarItem(
+                id: id,
+                windowID: 0,
+                frame: ax.frame,
+                windowOwnerPID: ax.pid,
+                appPID: ax.pid,
+                bundleID: ax.bundleID,
+                appName: ax.appName,
+                label: ax.label,
+                dividerName: nil
+            ))
+        }
+        return result.sorted { $0.frame.minX < $1.frame.minX }
+    }
+
     private static func bestWindow(for axFrame: CGRect, in windows: [(CGWindowID, CGRect)], excluding used: Set<CGWindowID>) -> (CGWindowID, CGRect)? {
         var best: (CGWindowID, CGRect)?
         var bestScore: CGFloat = 0
@@ -138,18 +181,47 @@ enum MenuBarItems {
               let children: [AXUIElement] = attribute(bar, kAXChildrenAttribute) else { return [] }
 
         let bundleID = app.bundleIdentifier ?? app.executableURL?.lastPathComponent ?? "pid\(pid)"
-        let appName = app.localizedName ?? bundleID
+        var appName = app.localizedName ?? bundleID
+        // macOS 27 moved system items from Control Centre into MenuBarAgent.
+        // Keep the name they had on macOS 26.
+        if bundleID == "com.apple.MenuBarAgent" {
+            appName = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first?.localizedName ?? "Control Centre"
+        }
         var items: [AXItem] = []
-        for child in children {
+        for child in children.flatMap(unwrapHostingView) {
             guard let frame = frame(of: child), frame.width > 0, frame.height > 0 else { continue }
             let identifier: String? = attribute(child, "AXIdentifier")
             let desc: String? = attribute(child, kAXDescriptionAttribute)
             let title: String? = attribute(child, kAXTitleAttribute)
             let help: String? = attribute(child, kAXHelpAttribute)
-            let label = [desc, title, help].compactMap { $0 }.first { !$0.isEmpty } ?? ""
+            let attributedDesc: NSAttributedString? = attribute(child, "AXAttributedDescription")
+            let label = [desc, title, help, attributedDesc?.string].compactMap { $0 }.first { !$0.isEmpty } ?? ""
             items.append(AXItem(pid: pid, bundleID: bundleID, appName: appName, identifier: identifier, label: label, frame: frame))
         }
         return items
+    }
+
+    /// On macOS 27, MenuBarAgent wraps each system item (Control Centre,
+    /// clock, battery, ...) in an `AXGroup`/`AXHostingView`. The real
+    /// `AXMenuBarItem`, which carries the identifier, is the group's child.
+    private static func unwrapHostingView(_ element: AXUIElement) -> [AXUIElement] {
+        guard (attribute(element, kAXRoleAttribute) as String?) == (kAXGroupRole as String),
+              let inner: [AXUIElement] = attribute(element, kAXChildrenAttribute) else { return [element] }
+        let items = inner.filter { (attribute($0, kAXRoleAttribute) as String?) == (kAXMenuBarItemRole as String) }
+        return items.isEmpty ? [element] : items
+    }
+
+    /// Frames of everything drawn in the status item area, read from
+    /// MenuBarAgent (macOS 27+). Used only to classify a click in the menu bar.
+    static func compositedItemFrames() -> [CGRect] {
+        guard let agent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first else { return [] }
+        let app = AXUIElementCreateApplication(agent.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        guard let windows: [AXUIElement] = attribute(app, kAXWindowsAttribute) else { return [] }
+        return windows
+            .flatMap { (attribute($0, kAXChildrenAttribute) as [AXUIElement]?) ?? [] }
+            .compactMap { frame(of: $0) }
+            .filter { $0.width > 0 }
     }
 
     private static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
